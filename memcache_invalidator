@@ -1,0 +1,87 @@
+#!/bin/bash
+TIMEOUT=2
+SERVERS=("127.0.0.1:11211")
+DEFAULTPORT=11211
+KEYLIMIT=100
+
+
+function usage {
+    echo ""
+    echo "$0 [regex]"
+    echo "Used to invalidate keys on memcached servers"
+    echo ""
+}
+
+function memcache_netcat {
+    netcat -q $TIMEOUT $SERVER $PORT
+}
+
+function memcache_delete {
+    echo "DELETING: $1"
+    RESULT=$(echo "delete $1" | memcache_netcat)
+}
+
+# Parameter is required
+if [ -z $1 ]; then
+    usage
+    exit 1
+fi
+
+
+
+
+# For each server... (in SERVER:PORT format)
+for definition in "${SERVERS[@]}"
+do
+    IFS=':'
+    read -ra server <<< "$definition"
+    SERVER=${server[0]}
+    PORT=${server[1]-$DEFAULTPORT}
+    LOOPS=0
+
+    echo ""
+    echo "Invalidating keys on: $SERVER:$PORT"
+    echo "Searching for       : $1"
+    echo ""
+    echo "stats items" | memcache_netcat | while read line;
+    do
+        LOOPS=$[$LOOPS+1]
+        let "ITERS=$LOOPS % 10"
+
+        # Each STATS ITEM row brings back 10 statistics. Skip all but first row.
+        if [ $ITERS -eq 1 ]; then
+            read -ra chunks <<< "$line"
+
+            # If this not a STATS ITEMS row, skip it
+            if [ ${#chunks[@]} -lt 3 ]; then
+                continue
+            fi
+
+            SLAB=${chunks[1]}
+            XIFS=$IFS
+            IFS=" "
+
+            # Search this slab for the keys it contains
+            echo "stats cachedump $SLAB $KEYLIMIT" | memcache_netcat | while read row;
+            do
+                # If the key matches the search, delete
+                KEY=`echo "$row" | tr -d '\b\r' | sed 's/^.\{4\} \([^ ]*\).*$/\1/'`
+                if [[ $KEY = "END" ]]; then
+                    continue
+                fi
+
+                if [[ $KEY =~ $1 ]]; then
+                    read -ra parts <<< "$row"
+                    memcache_delete $KEY
+                fi
+
+            done
+
+            IFS=$XIFS
+        fi
+    done
+
+done
+
+echo "DONE."
+echo ""
